@@ -1,6 +1,116 @@
+"use client"
+
 import Image from "next/image";
 
+import { useEffect } from 'react';
+
+
+
+let tf2:any;
+if (process.env.NEXT_PUBLIC_IS_SERVER === 'true') {
+  tf2 = require('@tensorflow/tfjs-node');
+} else {
+  tf2 = require('@tensorflow/tfjs');
+}
+ // Display forecasted savings
+
+
 export default function Home() {
+  let tf:any;
+  useEffect(() => {
+    async function loadTensorFlow() {
+      
+      if (typeof window === 'undefined') {
+        // Server-side: Load @tensorflow/tfjs-node
+        tf = await import('@tensorflow/tfjs-node');
+      } else {
+        // Client-side: Load @tensorflow/tfjs
+        tf = await import('@tensorflow/tfjs');
+      }
+
+      // Use TensorFlow.js here
+    }
+
+    loadTensorFlow();
+  }, []);
+
+// Example data (replace these with your actual data)
+const savingsData = [10220, 12125, 52400, 98797, 114166]; 
+const expenditureData = [1506, 6581, 9455, 10814, 13777]; 
+
+// Convert the data to a tensor
+const savingsTensor = tf.tensor(savingsData, [savingsData.length, 1]);
+const expenditureTensor = tf.tensor(expenditureData, [expenditureData.length, 1]);
+
+// Calculate the mean
+const savingsMean = savingsTensor.mean();
+const expenditureMean = expenditureTensor.mean();
+
+// Calculate the standard deviation
+const savingsStd = tf.sqrt(savingsTensor.sub(savingsMean).pow(2).mean());
+const expenditureStd = tf.sqrt(expenditureTensor.sub(expenditureMean).pow(2).mean());
+
+// Normalize the data
+const savingsNormalized = savingsTensor.sub(savingsMean).div(savingsStd);
+const expenditureNormalized = expenditureTensor.sub(expenditureMean).div(expenditureStd);
+
+// Create sequences (windows) of data for the LSTM model
+const WINDOW_SIZE = 12; // Use 12 months of data to predict the next value
+
+function createSequences(data:any, windowSize:any) {
+  let inputs = [];
+  let labels = [];
+  for (let i = 0; i < data.length - windowSize; i++) {
+    let inputSequence = data.slice(i, i + windowSize);
+    let label = data[i + windowSize];
+    inputs.push(inputSequence);
+    labels.push(label);
+  }
+  return [tf.tensor2d(inputs), tf.tensor2d(labels)];
+}
+
+const [X, y] = createSequences(expenditureNormalized.arraySync(), WINDOW_SIZE);
+
+// Build the LSTM model
+const model = tf.sequential();
+model.add(tf.layers.lstm({ units: 50, returnSequences: false, inputShape: [WINDOW_SIZE, 1] }));
+model.add(tf.layers.dense({ units: 1 }));
+
+model.compile({
+  optimizer: 'adam',
+  loss: 'meanSquaredError',
+});
+
+// Train the model
+// @ts-expect-error
+
+await model.fit(X, y, {
+  epochs: 20,
+  batchSize: 16,
+});
+
+// Forecast the next 12 months of savings based on current account expenditure
+async function forecastFutureSavings(model:any, recentExpenditure:any) {
+  let futureSavings = [];
+  let input = recentExpenditure.slice(-WINDOW_SIZE);
+
+  for (let i = 0; i < 12; i++) {
+    const prediction = model.predict(tf.tensor2d([input]));
+    futureSavings.push(prediction.arraySync()[0][0]);
+    input = input.slice(1).concat(prediction.arraySync()[0][0]);
+  }
+  
+  return futureSavings;
+}
+// @ts-expect-error
+
+const forecastedSavings:any = await forecastFutureSavings(model, expenditureNormalized.arraySync());
+
+// Denormalize the forecasted savings
+// @ts-expect-error
+const denormalizedForecast = forecastedSavings.map(s => s * savingsStd.arraySync() + savingsMean.arraySync() );
+
+console.log(denormalizedForecast);
   return (
     <main className="flex min-h-screen flex-col items-center justify-between p-24">
       <div className="z-10 w-full max-w-5xl items-center justify-between font-mono text-sm lg:flex">
